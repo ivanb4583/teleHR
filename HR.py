@@ -88,6 +88,14 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS anonymous_feedback (
     response_date DATETIME
 )''')
 
+# Добавляем создание таблицы reviews
+cursor.execute('''CREATE TABLE IF NOT EXISTS reviews (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255),
+    review TEXT,
+    timestamp DATETIME
+)''')
+
 conn.commit()
 conn.close()
 
@@ -102,6 +110,7 @@ class Form(StatesGroup):
     confirm_text2 = State()
     video_interview = State()
     anonymous_feedback = State()
+    waiting_feedback = State()  # добавляем новое состояние
 
 # Состояния для FSM
 class FeedbackStates(StatesGroup):
@@ -209,21 +218,19 @@ async def process_confirm_text1(message: types.Message, state: FSMContext):
 # Обработка анонимного отзыва
 @router.message(StateFilter(Form.anonymous_feedback))
 async def process_anonymous_feedback(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    name = data.get("name", "Anonymous")
-    feedback = message.text
-
-    # Записываем отзыв в базу данных
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''INSERT INTO anonymous_feedback (name, feedback, response_date)
-                      VALUES (%s, %s, %s)''',
-                   (name, feedback, datetime.now(timezone.utc)))
-    conn.commit()
-    conn.close()
-
-    await message.reply("Thank you for your feedback! We appreciate your input.", reply_markup=keyboard_start)
-    await state.clear()
+    if message.text == "Yes":
+        await message.reply(
+            "Please provide us with feedback about what confused you about our vacancy. "
+            "Your response will help us improve for future candidates. Thank you!"
+        )
+        await state.set_state(Form.waiting_feedback)
+    elif message.text == "No":
+        with open("1.txt", "r") as file:
+            text1 = file.read()
+        await message.reply(text1, reply_markup=keyboard_yes_no)
+        await state.set_state(Form.confirm_text1)
+    else:
+        await message.reply("Please respond with Yes or No.")
 
 # Обработка подтверждения текста 2
 @router.message(StateFilter(Form.confirm_text2))
@@ -258,6 +265,36 @@ async def process_video_interview(message: types.Message, state: FSMContext):
     else:
         await message.reply("You wrote something off-script. Sorry, I don't know how to respond. You can always start over by clicking the /start button.", reply_markup=keyboard_start)
 
+# Обработка отзыва
+@router.message(StateFilter(Form.waiting_feedback))
+async def process_feedback_text(message: types.Message, state: FSMContext):
+    # Получаем имя пользователя из сохраненных данных
+    data = await state.get_data()
+    name = data.get('name', 'Anonymous')
+    
+    # Подключаемся к базе данных из db2.txt
+    with open("db2.txt", "r") as file:
+        lines = file.readlines()
+        db2_config = {
+            "host": lines[0].strip(),
+            "user": lines[1].strip(),
+            "password": lines[2].strip(),
+            "database": lines[3].strip(),
+            "port": int(lines[4].strip()),
+        }
+    
+    # Сохраняем отзыв
+    conn = mysql.connector.connect(**db2_config)
+    cursor = conn.cursor()
+    cursor.execute('''INSERT INTO reviews (name, review, timestamp)
+                     VALUES (%s, %s, %s)''',
+                  (name, message.text, datetime.now(timezone.utc)))
+    conn.commit()
+    conn.close()
+
+    await message.reply("Thank you for your feedback!", reply_markup=keyboard_start)
+    await state.clear()
+
 # Обработка неотловленных событий
 @router.message()
 async def handle_unexpected_messages(message: types.Message):
@@ -265,11 +302,11 @@ async def handle_unexpected_messages(message: types.Message):
 
 # Исправление ошибки FSMContext
 @router.errors()
-async def handle_errors(update: types.Update, exception):
+async def handle_errors(update: types.Update, exception: Exception):
     if isinstance(exception, TypeError) and 'FSMContext.__init__() missing 1 required positional argument' in str(exception):
         logging.error("FSMContext initialization error detected. Ensure the Dispatcher is properly set up with FSMContext.")
     else:
-        logging.exception("An unexpected error occurred.")
+        logging.exception("An unexpected error occurred.", exc_info=exception)
     return True
 
 # Функция отправки статистики
@@ -301,39 +338,6 @@ async def send_daily_stats():
                                                  f"Keep up the great work!")
             except Exception as e:
                 print(f"Failed to send stats to admin {admin_id}: {e}")
-
-# Обработчик для ответа "Yes"
-@router.message(F.text.lower() == "yes")
-async def process_yes(message: types.Message):
-    await message.answer("Что именно вас смутило? Пожалуйста напишите нам, чтобы мы могли улучшиться для будущих работников.")
-    await FeedbackStates.waiting_for_feedback.set()
-
-# Обработчик для получения отзыва
-@router.message(StateFilter(FeedbackStates.waiting_for_feedback))
-async def process_feedback(message: types.Message, state: FSMContext):
-    feedback = message.text
-    await state.update_data(feedback=feedback)
-    
-    submit_button = KeyboardButton("Submit")
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(submit_button)
-    await message.answer("Нажм��те 'Submit' для отправки отзыва.", reply_markup=keyboard)
-
-# Обработчик для кнопки "Submit"
-@router.message(F.text.lower() == "submit", StateFilter(FeedbackStates.waiting_for_feedback))
-async def submit_feedback(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    feedback = user_data['feedback']
-    
-    # Сохранение отзыва в базу данных (пример)
-    save_feedback_to_db(feedback)
-    
-    await message.answer("Спасибо за ваш отзыв!", reply_markup=types.ReplyKeyboardRemove())
-    await state.finish()
-
-def save_feedback_to_db(feedback):
-    # Пример функции для сохранения отзыва в базу данных
-    # Реализуйте сохранение в вашу базу данных здесь
-    pass
 
 # Запуск бота
 async def main():
