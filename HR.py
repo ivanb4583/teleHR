@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import re
 from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -96,6 +97,14 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS reviews (
     timestamp DATETIME
 )''')
 
+# Создаем таблицу для уведомлений
+cursor.execute('''CREATE TABLE IF NOT EXISTS interview_notifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    admin_id VARCHAR(255),
+    user_tg_id VARCHAR(255),
+    message_id INT
+)''')
+
 conn.commit()
 conn.close()
 
@@ -138,6 +147,60 @@ async def start_command(message: types.Message, state: FSMContext):
     await message.reply("Welcome! Please provide your name:")
     await state.set_state(Form.name)
 
+# Обработка команды /preset Good {telegramid}
+@router.message(Command(commands=["preset"]))
+async def preset_command(message: types.Message):
+    if message.from_user.id in ADMIN_IDS:
+        command_parts = message.text.split()
+        if len(command_parts) == 3 and command_parts[1] == "Good":
+            telegram_id = command_parts[2]
+            with open("3.txt", "r") as file:
+                text3 = file.read()
+            try:
+                await bot.send_message(telegram_id, text3)
+                await message.reply(f"Message sent to {telegram_id}")
+            except Exception as e:
+                await message.reply(f"Failed to send message to {telegram_id}: {e}")
+        else:
+            await message.reply("Invalid command format. Use /preset Good {telegramid}")
+    else:
+        await message.reply("You are not authorized to use this command.")
+
+# Обработка команды /work {telegramid}
+@router.message(Command(commands=["work"]))
+async def work_command(message: types.Message):
+    if message.from_user.id in ADMIN_IDS:
+        command_parts = message.text.split()
+        if len(command_parts) == 2:
+            user_tg_id = command_parts[1]
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Обновляем поле HR в таблице users
+            cursor.execute('UPDATE users SET hr = %s WHERE telegram_id = %s', 
+                         (str(message.from_user.id), user_tg_id))
+            
+            # Удаляем уведомления как раньше
+            cursor.execute('''SELECT admin_id, message_id FROM interview_notifications
+                              WHERE user_tg_id = %s''', (user_tg_id,))
+            rows = cursor.fetchall()
+            for row in rows:
+                admin_id, msg_id = row
+                try:
+                    await bot.delete_message(chat_id=admin_id, message_id=msg_id)
+                except Exception as e:
+                    await message.reply(f"Could not delete message_id {msg_id} for admin {admin_id}: {e}")
+
+            cursor.execute('DELETE FROM interview_notifications WHERE user_tg_id = %s', (user_tg_id,))
+            conn.commit()
+            conn.close()
+            
+            await message.reply(f"All notifications removed and HR assigned for user {user_tg_id}")
+        else:
+            await message.reply("Invalid command format. Use /work {telegramid}")
+    else:
+        await message.reply("You are not authorized to use this command.")
+
 # Обработка ввода имени
 @router.message(StateFilter(Form.name))
 async def process_name(message: types.Message, state: FSMContext):
@@ -148,16 +211,24 @@ async def process_name(message: types.Message, state: FSMContext):
 # Обработка ввода номера телефона
 @router.message(StateFilter(Form.phone_number))
 async def process_phone_number(message: types.Message, state: FSMContext):
-    await state.update_data(phone_number=message.text)
-    await message.reply("Please provide your email:")
-    await state.set_state(Form.email)
+    phone_number = message.text
+    if re.match(r'^[\d\+\-\(\) ]+$', phone_number):
+        await state.update_data(phone_number=phone_number)
+        await message.reply("Please provide your email:")
+        await state.set_state(Form.email)
+    else:
+        await message.reply("Please provide a valid phone number (digits, +, -, (, ) and spaces are allowed):")
 
 # Обработка ввода email
 @router.message(StateFilter(Form.email))
 async def process_email(message: types.Message, state: FSMContext):
-    await state.update_data(email=message.text)
-    await message.reply("Rate your English level from 1 to 10:")
-    await state.set_state(Form.english_level)
+    email = message.text
+    if re.match(r'^[^@]+@[^@]+\.[^@]+$', email):
+        await state.update_data(email=email)
+        await message.reply("Rate your English level from 1 to 10:")
+        await state.set_state(Form.english_level)
+    else:
+        await message.reply("Please provide a valid email address:")
 
 # Обработка уровня английского
 @router.message(StateFilter(Form.english_level))
@@ -208,10 +279,10 @@ async def process_confirm_text1(message: types.Message, state: FSMContext):
         await message.reply(text2, reply_markup=keyboard_yes_no)
         await state.set_state(Form.confirm_text2)
     elif message.text == "No":
-        await message.reply("Are you sure?", reply_markup=keyboard_yes_no)
+        await message.reply("We're sorry. But are you sure?", reply_markup=keyboard_yes_no)
         await state.set_state(Form.anonymous_feedback)
     elif message.text == "I need human help":
-        await message.reply("Please contact our HR on Telegram: @hr_contact")
+        await message.reply("Please contact our HR on Telegram: @HR_LERA_Meneger")
     else:
         await message.reply("You wrote something off-script. Sorry, I don't know how to respond. You can always start over by clicking the /start button.", reply_markup=keyboard_start)
 
@@ -236,13 +307,12 @@ async def process_anonymous_feedback(message: types.Message, state: FSMContext):
 @router.message(StateFilter(Form.confirm_text2))
 async def process_confirm_text2(message: types.Message, state: FSMContext):
     if message.text == "Yes":
-        await message.reply("Did you complete the video interview?", reply_markup=keyboard_yes_no)
+        await message.reply("👉 Did you complete the video interview? 👈 Please come back here and ❗️click Yes only if you have already completed the video interview.", reply_markup=keyboard_yes_no)
         await state.set_state(Form.video_interview)
     elif message.text == "No":
-        await message.reply("Are you sure?", reply_markup=keyboard_yes_no)
-        await state.set_state(Form.anonymous_feedback)
+        await message.reply("Did you complete the video interview?", reply_markup=keyboard_yes_no)
     elif message.text == "I need human help":
-        await message.reply("Please contact our HR on Telegram: @hr_contact")
+        await message.reply("Please contact our HR on Telegram: @HR_LERA_Meneger")
     else:
         await message.reply("You wrote something off-script. Sorry, I don't know how to respond. You can always start over by clicking the /start button.", reply_markup=keyboard_start)
 
@@ -250,18 +320,24 @@ async def process_confirm_text2(message: types.Message, state: FSMContext):
 @router.message(StateFilter(Form.video_interview))
 async def process_video_interview(message: types.Message, state: FSMContext):
     if message.text == "Yes":
+        conn = get_db_connection()
+        cursor = conn.cursor()
         for admin_id in ADMIN_IDS:
             try:
-                await bot.send_message(admin_id, f"User with ID {message.from_user.id} passed the video interview. Please check.")
+                sent_msg = await bot.send_message(admin_id, f"User with ID {message.from_user.id} passed the video interview. Please check.")
+                cursor.execute('''INSERT INTO interview_notifications (admin_id, user_tg_id, message_id)
+                                  VALUES (%s, %s, %s)''',
+                               (admin_id, message.from_user.id, sent_msg.message_id))
             except Exception as e:
                 print(f"Failed to send message to admin {admin_id}: {e}")
-        await message.reply("Thank you! Your response has been recorded.", reply_markup=keyboard_start)
+        conn.commit()
+        conn.close()
+        await message.reply("Thank you! I have sent a request to HR to review your video interview. This usually takes between 24 to 48 hours. Please wait for our response.", reply_markup=keyboard_start)
         await state.clear()
     elif message.text == "No":
-        await message.reply("Thank you for your response. Let us know if you need assistance.", reply_markup=keyboard_start)
-        await state.clear()
+        await message.reply("Did you complete the video interview?", reply_markup=keyboard_yes_no)
     elif message.text == "I need human help":
-        await message.reply("Please contact our HR on Telegram: @hr_contact", reply_markup=keyboard_start)
+        await message.reply("Please contact our HR on Telegram: @HR_LERA_Meneger", reply_markup=keyboard_start)
     else:
         await message.reply("You wrote something off-script. Sorry, I don't know how to respond. You can always start over by clicking the /start button.", reply_markup=keyboard_start)
 
@@ -292,7 +368,7 @@ async def process_feedback_text(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
 
-    await message.reply("Thank you for your feedback!", reply_markup=keyboard_start)
+    await message.reply("Thank you for your feedback! Have a great day!", reply_markup=keyboard_start)
     await state.clear()
 
 # Обработка неотловленных событий
