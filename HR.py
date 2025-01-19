@@ -176,26 +176,45 @@ async def work_command(message: types.Message):
             conn = get_db_connection()
             cursor = conn.cursor()
             
+            # Проверяем существование пользователя
+            cursor.execute('SELECT id, hr FROM users WHERE telegram_id = %s', (user_tg_id,))
+            user = cursor.fetchone()
+            
+            if not user:
+                await message.reply(f"User with telegram_id {user_tg_id} not found")
+                conn.close()
+                return
+                
+            if user[1]:  # Если HR уже назначен
+                await message.reply(f"This user already has HR assigned (HR ID: {user[1]})")
+                conn.close()
+                return
+            
             # Обновляем поле HR в таблице users
             cursor.execute('UPDATE users SET hr = %s WHERE telegram_id = %s', 
                          (str(message.from_user.id), user_tg_id))
             
-            # Удаляем уведомления как раньше
+            # Логируем назначение HR
+            cursor.execute('''INSERT INTO admin_logs (action, user_id, admin_id, timestamp)
+                            VALUES (%s, %s, %s, %s)''',
+                         ('assign_hr', user_tg_id, str(message.from_user.id), datetime.now(timezone.utc)))
+            
+            # Удаляем уведомления
             cursor.execute('''SELECT admin_id, message_id FROM interview_notifications
-                              WHERE user_tg_id = %s''', (user_tg_id,))
+                            WHERE user_tg_id = %s''', (user_tg_id,))
             rows = cursor.fetchall()
             for row in rows:
                 admin_id, msg_id = row
                 try:
                     await bot.delete_message(chat_id=admin_id, message_id=msg_id)
                 except Exception as e:
-                    await message.reply(f"Could not delete message_id {msg_id} for admin {admin_id}: {e}")
+                    print(f"Could not delete message_id {msg_id} for admin {admin_id}: {e}")
 
             cursor.execute('DELETE FROM interview_notifications WHERE user_tg_id = %s', (user_tg_id,))
             conn.commit()
             conn.close()
             
-            await message.reply(f"All notifications removed and HR assigned for user {user_tg_id}")
+            await message.reply(f"You ({message.from_user.id}) have been assigned as HR for user {user_tg_id}")
         else:
             await message.reply("Invalid command format. Use /work {telegramid}")
     else:

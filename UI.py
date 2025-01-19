@@ -1,7 +1,8 @@
 import sys
+import requests
 from PyQt5 import QtCore, QtGui, QtWidgets
 import mysql.connector
-from datetime import datetime  # Добавляем импорт datetime
+from datetime import datetime
 
 def load_db_config():
     try:
@@ -18,9 +19,57 @@ def load_db_config():
         print(f"Error loading DB config: {e}")
         sys.exit(1)
 
+class LoginDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("HR Panel Login")
+        self.setModal(True)
+        
+        layout = QtWidgets.QVBoxLayout(self)
+        
+        # Поля ввода
+        self.login = QtWidgets.QLineEdit()
+        self.login.setPlaceholderText("Login")
+        layout.addWidget(self.login)
+        
+        self.password = QtWidgets.QLineEdit()
+        self.password.setPlaceholderText("Password")
+        self.password.setEchoMode(QtWidgets.QLineEdit.Password)
+        layout.addWidget(self.password)
+        
+        # Кнопка входа
+        self.login_button = QtWidgets.QPushButton("Вход")
+        self.login_button.clicked.connect(self.check_credentials)
+        layout.addWidget(self.login_button)
+        
+        self.error_label = QtWidgets.QLabel("")
+        self.error_label.setStyleSheet("color: red")
+        layout.addWidget(self.error_label)
+        
+    def check_credentials(self):
+        try:
+            response = requests.get('https://rabotabox.online/assets/HR/Stas.txt')
+            if response.status_code == 200:
+                credentials = response.text.strip().split('\n')
+                for cred in credentials:
+                    login, password = cred.strip().split(':')
+                    if login == self.login.text() and password == self.password.text():
+                        self.accept()
+                        return
+                self.error_label.setText("Неверный логин или пароль")
+            else:
+                self.error_label.setText("Ошибка проверки учетных данных")
+        except Exception as e:
+            self.error_label.setText(f"Ошибка: {str(e)}")
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
+        # Сначала показываем окно логина
+        login_dialog = LoginDialog()
+        if login_dialog.exec_() != QtWidgets.QDialog.Accepted:
+            sys.exit()
+            
         self.setWindowTitle("HR Panel")
         self.config = load_db_config()
         
@@ -218,9 +267,15 @@ class MainWindow(QtWidgets.QMainWindow):
 def main():
     print("Starting application...")
     app = QtWidgets.QApplication(sys.argv)
+    
+    # Устанавливаем стиль
+    app.setStyle('Fusion')
+    
+    # Создаем и показываем главное окно
     window = MainWindow()
     window.resize(900, 500)
     window.show()
+    
     print("Application started")
     sys.exit(app.exec_())
 
