@@ -1,6 +1,7 @@
 import sys
 import requests
 import base64
+import traceback  # Добавляем этот импорт
 from cryptography.fernet import Fernet
 from PyQt5 import QtCore, QtGui, QtWidgets
 import mysql.connector
@@ -424,7 +425,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         note,
                         data.get('Email', ''),
                         current_date,
-                        "NEW",
+                        "New",  # Изменено с "NEW" на "New"
                         "Facebook",
                         "NG",
                         data.get('Phone', '')
@@ -696,7 +697,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         if isinstance(value, datetime):
                             value = value.strftime("%d/%m/%y %H:%M")
                         else:
-                            value = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").strftime("%d/%m/%y %H:%М")
+                            value = datetime.strptime(str(value), "%Y-%м-%d %H:%М:%S").strftime("%d/%m/%y %H:%М")
                     item = QtWidgets.QTableWidgetItem(str(value) if value else "")
                     
                     # Подсветка дубликатов
@@ -816,23 +817,37 @@ class MainWindow(QtWidgets.QMainWindow):
                 api_token = file.read().strip()
             print("Telegram token:", api_token)
 
-            response = requests.get(f"https://rabotabox.online/assets/HR/{admin_name}.txt")
+            admin_file_url = f"https://rabotabox.online/assets/HR/{admin_name}.txt"
+            print(f"Requesting admin data from: {admin_file_url}")
+            
+            response = requests.get(admin_file_url)
+            print(f"Response status: {response.status_code}")
+            print(f"Response content: {response.text}")
+            
             if response.status_code == 200:
                 lines = response.text.strip().split('\n')
-                group_id = lines[1].strip()  # Берём вторую строку
-                print("Group ID:", group_id)
+                if len(lines) >= 2:
+                    group_id = lines[1].strip()
+                    print("Group ID:", group_id)
 
-                message = "🥁⏰🧰 New translator added to your account! Please contact him as soon as possible!"
-                resp = requests.get(
-                    f"https://api.telegram.org/bot{api_token}/sendMessage",
-                    params={"chat_id": group_id, "text": message},
-                )
-                print("Telegram response code:", resp.status_code)
-                print("Telegram response body:", resp.text)
+                    message = "🥁⏰🧰 New translator added to your account! Please contact him as soon as possible!"
+                    telegram_url = f"https://api.telegram.org/bot{api_token}/sendMessage"
+                    resp = requests.post(
+                        telegram_url,
+                        json={"chat_id": group_id, "text": message}
+                    )
+                    print("Telegram response code:", resp.status_code)
+                    print("Telegram response body:", resp.text)
+                else:
+                    print("Error: Admin file does not contain enough lines")
+                    print("File content:", lines)
             else:
-                print("Failed to get group ID from server. Status:", response.status_code)
+                print(f"Failed to get group ID from server. Status: {response.status_code}")
+                print(f"Response text: {response.text}")
         except Exception as e:
             print(f"Error sending Telegram notification: {e}")
+            traceback.print_exc()
+            raise  # Перебрасываем исключение дальше для обработки в assign_admin
 
 def main():
     print("Starting application...")
