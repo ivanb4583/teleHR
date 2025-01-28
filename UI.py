@@ -157,7 +157,104 @@ class MainWindow(QtWidgets.QMainWindow):
         delete_button = QtWidgets.QPushButton("Удалить")
         delete_button.clicked.connect(self.delete_record)
         button_layout.addWidget(delete_button)
+
+        # Add new Send reminder button
+        reminder_button = QtWidgets.QPushButton("Send reminder")
+        reminder_button.clicked.connect(self.send_reminder)
+        button_layout.addWidget(reminder_button)
+        
         layout.addLayout(button_layout)
+
+    def send_reminder(self):
+        # Get period input from user
+        period, ok = QtWidgets.QInputDialog.getInt(
+            self,
+            "Select Period",
+            "Enter period in days (0 for all time):\n1 - today\n2 - today and yesterday\n3 - last 3 days, etc.",
+            value=0,
+            min=0,
+            max=1000
+        )
+        
+        if not ok:
+            return
+
+        try:
+            # Read bot token
+            with open("API.txt", "r") as file:
+                bot_token = file.read().strip()
+
+            # Connect to database
+            conn = mysql.connector.connect(**self.config)
+            cursor = conn.cursor()
+
+            # Prepare query based on period
+            if period == 0:
+                query = "SELECT telegram_id FROM users WHERE hr IS NULL OR hr = ''"
+            else:
+                query = """
+                    SELECT telegram_id 
+                    FROM users 
+                    WHERE (hr IS NULL OR hr = '') 
+                    AND response_date >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                """
+
+            # Execute query
+            if period == 0:
+                cursor.execute(query)
+            else:
+                cursor.execute(query, (period,))
+
+            telegram_ids = [str(row[0]) for row in cursor.fetchall()]
+            conn.close()
+
+            if not telegram_ids:
+                QtWidgets.QMessageBox.information(self, "Info", "No leads found for reminders.")
+                return
+
+            # Create progress dialog
+            progress = QtWidgets.QProgressDialog(
+                "Sending reminders...", 
+                "Cancel", 
+                0, 
+                len(telegram_ids), 
+                self
+            )
+            progress.setWindowModality(QtCore.Qt.WindowModal)
+            
+            # Message text
+            message = """Hello! You applied for the position but haven't completed the video interview yet. What stopped you? Do you have any questions? Need help? Write to our HR on Telegram @HR_LERA_Meneger"""
+
+            # Send messages
+            successful = 0
+            for i, tid in enumerate(telegram_ids):
+                if progress.wasCanceled():
+                    break
+
+                try:
+                    response = requests.get(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        params={
+                            "chat_id": tid,
+                            "text": message
+                        }
+                    )
+                    if response.status_code == 200:
+                        successful += 1
+                except Exception as e:
+                    print(f"Error sending message to {tid}: {e}")
+
+                progress.setValue(i + 1)
+
+            # Show results
+            QtWidgets.QMessageBox.information(
+                self,
+                "Reminder Results",
+                f"Successfully sent: {successful} out of {len(telegram_ids)} reminders"
+            )
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Error sending reminders: {str(e)}")
 
     def setup_reviews_tab(self):
         layout = QtWidgets.QVBoxLayout(self.reviews_tab)
