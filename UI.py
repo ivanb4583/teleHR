@@ -87,11 +87,11 @@ class LoginDialog(QtWidgets.QDialog):
                     if login == self.login.text() and password == self.password.text():
                         self.accept()
                         return
-                self.error_label.setText("Неверный логин или пароль")
+                self.error_label.setText("Invalid login or password")
             else:
-                self.error_label.setText("Ошибка проверки учетных данных")
+                self.error_label.setText("Credential verification error")
         except Exception as e:
-            self.error_label.setText(f"Ошибка: {str(e)}")
+            self.error_label.setText(f"Error: {str(e)}")
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -127,6 +127,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_reviews()
         self.load_approved()
 
+        self.statusBar = QtWidgets.QStatusBar()
+        self.setStatusBar(self.statusBar)
+
     def setup_leads_tab(self):
         layout = QtWidgets.QVBoxLayout(self.leads_tab)
         # Переносим существующий код для leads сюда
@@ -155,7 +158,7 @@ class MainWindow(QtWidgets.QMainWindow):
         refresh_button.clicked.connect(self.load_data)
         button_layout.addWidget(refresh_button)
 
-        delete_button = QtWidgets.QPushButton("Удалить")
+        delete_button = QtWidgets.QPushButton("Delete")
         delete_button.clicked.connect(self.delete_record)
         button_layout.addWidget(delete_button)
 
@@ -185,28 +188,59 @@ class MainWindow(QtWidgets.QMainWindow):
             with open("API.txt", "r") as file:
                 bot_token = file.read().strip()
 
-            # Connect to database
+            # Connect to database and count total users
             conn = mysql.connector.connect(**self.config)
             cursor = conn.cursor()
 
+            # First, let's count and log total users
+            cursor.execute("SELECT COUNT(*) FROM users")
+            total_users = cursor.fetchone()[0]
+            print(f"Total users in database: {total_users}")
+
             # Prepare query based on period
             if period == 0:
-                query = "SELECT telegram_id FROM users WHERE hr IS NULL OR hr = ''"
+                query = """
+SELECT DISTINCT telegram_id 
+FROM users 
+WHERE telegram_id IS NOT NULL 
+                    AND telegram_id != '' 
+                    AND (hr IS NULL OR hr = '')
+                """
             else:
                 query = """
-                    SELECT telegram_id 
+                    SELECT DISTINCT telegram_id 
                     FROM users 
-                    WHERE (hr IS NULL OR hr = '') 
+                    WHERE telegram_id IS NOT NULL 
+                    AND telegram_id != '' 
+                    AND (hr IS NULL OR hr = '') 
                     AND response_date >= DATE_SUB(NOW(), INTERVAL %s DAY)
                 """
 
-            # Execute query
+            # Execute query and log results
             if period == 0:
                 cursor.execute(query)
             else:
                 cursor.execute(query, (period,))
 
-            telegram_ids = [str(row[0]) for row in cursor.fetchall()]
+            telegram_ids = [str(row[0]) for row in cursor.fetchall() if str(row[0]).strip()]
+
+            # Log statistics
+            print(f"Found {len(telegram_ids)} unique telegram IDs to send reminders")
+            
+            # Additional check for duplicates
+            duplicate_check = {}
+            for tid in telegram_ids:
+                if tid in duplicate_check:
+                    duplicate_check[tid] += 1
+                else:
+                    duplicate_check[tid] = 1
+            
+            duplicates = {tid: count for tid, count in duplicate_check.items() if count > 1}
+            if duplicates:
+                print(f"Found {len(duplicates)} duplicate telegram IDs:")
+                for tid, count in duplicates.items():
+                    print(f"Telegram ID {tid} appears {count} times")
+
             conn.close()
 
             if not telegram_ids:
@@ -223,11 +257,11 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             progress.setWindowModality(QtCore.Qt.WindowModal)
             
-            # Message text
             message = """Hello! You applied for the position but haven't completed the video interview yet. What stopped you? Do you have any questions? Need help? Write to our HR on Telegram @HR_LERA_Meneger"""
 
-            # Send messages
+            # Send messages with detailed logging
             successful = 0
+            failed = 0
             for i, tid in enumerate(telegram_ids):
                 if progress.wasCanceled():
                     break
@@ -242,20 +276,32 @@ class MainWindow(QtWidgets.QMainWindow):
                     )
                     if response.status_code == 200:
                         successful += 1
+                    else:
+                        failed += 1
+                        print(f"Failed to send to {tid}. Status code: {response.status_code}")
+                        print(f"Response: {response.text}")
                 except Exception as e:
+                    failed += 1
                     print(f"Error sending message to {tid}: {e}")
 
                 progress.setValue(i + 1)
 
-            # Show results
-            QtWidgets.QMessageBox.information(
-                self,
-                "Reminder Results",
-                f"Successfully sent: {successful} out of {len(telegram_ids)} reminders"
-            )
+            # Show detailed results
+            result_message = f"""
+Reminder Results:
+Total users in database: {total_users}
+Unique telegram IDs found: {len(telegram_ids)}
+Successfully sent: {successful}
+Failed: {failed}
+"""
+            QtWidgets.QMessageBox.information(self, "Reminder Results", result_message)
+            print(result_message)
 
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Error sending reminders: {str(e)}")
+            error_message = f"Error sending reminders: {str(e)}"
+            print(error_message)
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", error_message)
 
     def setup_reviews_tab(self):
         layout = QtWidgets.QVBoxLayout(self.reviews_tab)
@@ -334,6 +380,22 @@ class MainWindow(QtWidgets.QMainWindow):
         add_worker_button.setStyleSheet("background-color: #d4ffd4;")  # Очень бледно зеленый
         add_worker_button.clicked.connect(self.add_worker)
         button_layout.addWidget(add_worker_button)
+
+        # Добавляем кнопку Edit
+        edit_button = QtWidgets.QPushButton("Edit")
+        edit_button.setStyleSheet("background-color: #d4d4ff;")
+        edit_button.clicked.connect(self.edit_worker)
+        button_layout.addWidget(edit_button)
+
+        # Добавляем новую кнопку Delete
+        delete_button = QtWidgets.QPushButton("Delete")
+        delete_button.setStyleSheet("background-color: #ffd4d4;")
+        delete_button.clicked.connect(self.delete_approved)
+        button_layout.addWidget(delete_button)
+
+        self.reminder_button_approved = QtWidgets.QPushButton("Send reminder")
+        self.reminder_button_approved.clicked.connect(self.send_reminder_approved)
+        button_layout.addWidget(self.reminder_button_approved)
 
         layout.addLayout(button_layout)
 
@@ -416,6 +478,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
                     current_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S.000000')
                     note = f"age: {data.get('Age', '')}\ntelegram: {data.get('Telegram', '')}"
+                    
+                    # Определяем страну на основе номера телефона
+                    phone = data.get('Phone', '')
+                    country = "PH" if phone.startswith(('6', '+6')) else "NG"
+                    
                     query = """
                     INSERT INTO Workers (Name, Note, Email, Date, Status, Source, Country, Number)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -427,7 +494,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         current_date,
                         "New",  # Изменено с "NEW" на "New"
                         "Facebook",
-                        "NG",
+                        country,  # Используем определенную страну
                         data.get('Phone', '')
                     )
 
@@ -578,12 +645,18 @@ class MainWindow(QtWidgets.QMainWindow):
             current_count = 0
             
             for row_index, row_data in enumerate(rows):
+                print(f"Now parsing row_index={row_index}, row_data={row_data}")
                 # Получаем дату из timestamp
                 timestamp = row_data[2]
-                if isinstance(timestamp, str):
-                    date = datetime.strptime(timestamp, "%Y-%м-%d %H:%М:%S").date()
-                else:
-                    date = timestamp.date()
+                try:
+                    # Исправляем русские буквы в формате и перехватываем ошибку
+                    if isinstance(timestamp, str):
+                        date = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").date()
+                    else:
+                        date = timestamp.date()
+                except Exception as e:
+                    print(f"Error parsing record at row {row_index}, ID={row_data[0]}, details: {e}")
+                    continue  # Пропускаем проблемную запись
                 
                 # Если новая дата, сбрасываем счетчик
                 if date != current_date:
@@ -598,11 +671,23 @@ class MainWindow(QtWidgets.QMainWindow):
                 # Заполняем данные строки
                 for col_index, value in enumerate(row_data):
                     if col_index == 2 and value:  # Дата
-                        if isinstance(value, datetime):
-                            value = value.strftime("%d/%m/%y %H:%M")
-                        else:
-                            value = datetime.strptime(value, "%Y-%m-%d %H:%М:%S").strftime("%d/%м/%y %H:%М")
-                    
+                        try:
+                            if isinstance(value, datetime):
+                                value = value.strftime("%d/%m/%y %H:%M")
+                            else:
+                                try:
+                                    dt = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+                                    value = dt.strftime("%d/%m/%y %H:%M")
+                                except ValueError:
+                                    try:
+                                        dt = datetime.strptime(str(value), "%Y-%m-%d")
+                                        value = dt.strftime("%d/%m/%y")
+                                    except ValueError:
+                                        print(f"Warning: Could not parse date {value}")
+                                except Exception as e:
+                                    print(f"Warning: Date parsing error {e}")
+                        except Exception as e:
+                            print(f"Error parsing date {value}: {e}")
                     item = QtWidgets.QTableWidgetItem(str(value) if value else "")
                     
                     # Подсветка дубликатов
@@ -629,7 +714,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table.setColumnWidth(7, 40)   # modern_pc
 
     def apply_filters(self):
-        searchable_columns = [0, 1, 2, 3, 4, 8]  # убираем 5, 6 (english_level, modern_pc)
+        searchable_columns = [0, 1, 2, 3, 4, 5, 8]  # добавляем 5 (email)
         for row in range(self.table.rowCount()):
             self.table.setRowHidden(row, False)
         for row in range(self.table.rowCount()):
@@ -647,7 +732,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if selected_items:
             id_item = selected_items[0]
             id_value = id_item.text()
-            reply = QtWidgets.QMessageBox.question(self, 'Подтверждение', f"Удалить запись с ID {id_value}?",
+            reply = QtWidgets.QMessageBox.question(self, 'Confirmation', f"Delete record with ID {id_value}?",
                                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
                 try:
@@ -663,7 +748,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def load_approved(self):
         try:
-            with open("db3.txt", "r") as file:
+            with open("db3.txt", "r") as file:  
                 lines = file.readlines()
                 db3_config = {
                     "host": lines[0].strip(),
@@ -681,8 +766,9 @@ class MainWindow(QtWidgets.QMainWindow):
             columns = cursor.fetchall()
             print("Table structure:", [col[0] for col in columns])
             
+            # Добавляем id в запрос
             cursor.execute("""
-                SELECT Status, Date, Name, Country, Admin, Stage, RejectReason 
+                SELECT id, Status, Date, Name, Country, Admin, Stage, RejectReason 
                 FROM Workers 
                 ORDER BY Date DESC
             """)
@@ -693,15 +779,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.approved_table.setRowCount(len(rows))
             for row_index, row_data in enumerate(rows):
                 for col_index, value in enumerate(row_data):
-                    if col_index == 1 and value:  # Date
-                        if isinstance(value, datetime):
-                            value = value.strftime("%d/%m/%y %H:%M")
-                        else:
-                            value = datetime.strptime(str(value), "%Y-%м-%d %H:%М:%S").strftime("%d/%m/%y %H:%М")
-                    item = QtWidgets.QTableWidgetItem(str(value) if value else "")
+                    # Пропускаем id в отображении, но сохраняем его как данные
+                    if col_index == 0:
+                        continue
                     
-                    # Подсветка дубликатов
-                    if col_index == 0:  # Status column
+                    if col_index == 2 and value:  # Дата (теперь col_index 2, так как добавили id)
+                        try:
+                            if isinstance(value, datetime):
+                                value = value.strftime("%d/%m/%y %H:%M")
+                            else:
+                                value = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").strftime("%d/%m/%y %H:%M")
+                        except Exception as e:
+                            print(f"Error parsing approved date {value}: {e}")
+                    value = str(value)
+                    
+                    item = QtWidgets.QTableWidgetItem(str(value) if value else "")
+                    if col_index == 1:  # Status column (сдвинут на 1 из-за id)
                         if value == "NEW":
                             item.setBackground(QtGui.QColor(255, 255, 200))
                         elif value == "STUDY":
@@ -711,7 +804,11 @@ class MainWindow(QtWidgets.QMainWindow):
                         elif value == "LEFT":
                             item.setBackground(QtGui.QColor(255, 200, 200))
                     
-                    self.approved_table.setItem(row_index, col_index, item)
+                    # Сохраняем ID записи в первой ячейке строки как данные
+                    if col_index == 1:  # В первой отображаемой колонке
+                        item.setData(QtCore.Qt.UserRole, row_data[0])  # Сохраняем ID
+                        
+                    self.approved_table.setItem(row_index, col_index - 1, item)  # Сдвигаем на 1 из-за пропуска id
 
             # Устанавливаем ширину столбцов
             self.approved_table.setColumnWidth(0, 80)   # Status
@@ -848,6 +945,360 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"Error sending Telegram notification: {e}")
             traceback.print_exc()
             raise  # Перебрасываем исключение дальше для обработки в assign_admin
+
+    def delete_approved(self):
+        selected_items = self.approved_table.selectedItems()
+        if not selected_items:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Please select a record to delete")
+            return
+            
+        row = selected_items[0].row()
+        name_item = self.approved_table.item(row, 2)  # Name
+        status_item = self.approved_table.item(row, 0)  # Первая ячейка содержит ID в данных
+        
+        if not status_item:
+            return
+            
+        record_id = status_item.data(QtCore.Qt.UserRole)  # Получаем сохраненный ID
+        
+        reply = QtWidgets.QMessageBox.question(
+            self, 
+            'Confirmation', 
+            f"Delete record for {name_item.text()} (ID: {record_id})?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, 
+            QtWidgets.QMessageBox.No
+        )
+        
+        if reply == QtWidgets.QMessageBox.Yes:
+            try:
+                with open("db3.txt", "r") as file:
+                    lines = file.readlines()
+                    db3_config = {
+                        "host": lines[0].strip(),
+                        "user": lines[1].strip(),
+                        "password": lines[2].strip(),
+                        "database": "TranslatorDB",
+                        "port": int(lines[4].strip()),
+                    }
+                
+                conn = mysql.connector.connect(**db3_config)
+                cursor = conn.cursor()
+                
+                cursor.execute(
+                    "DELETE FROM Workers WHERE id = %s",
+                    (record_id,)
+                )
+                conn.commit()
+                conn.close()
+                
+                self.load_approved()  # перезагружаем данные
+                print(f"Record with ID {record_id} deleted successfully")
+                
+            except Exception as e:
+                print(f"Error deleting record: {e}")
+                QtWidgets.QMessageBox.critical(
+                    self, 
+                    "Error", 
+                    f"Failed to delete record: {str(e)}"
+                )
+
+    def edit_worker(self):
+        selected_items = self.approved_table.selectedItems()
+        if not selected_items:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Please select a record to edit")
+            return
+            
+        row = selected_items[0].row()
+        status_item = self.approved_table.item(row, 0)
+        if not status_item:
+            return
+            
+        record_id = status_item.data(QtCore.Qt.UserRole)
+        
+        try:
+            with open("db3.txt", "r") as file:
+                lines = file.readlines()
+                db3_config = {
+                    "host": lines[0].strip(),
+                    "user": lines[1].strip(),
+                    "password": lines[2].strip(),
+                    "database": "TranslatorDB",
+                    "port": int(lines[4].strip()),
+                }
+            
+            conn = mysql.connector.connect(**db3_config)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, Status, Date, Name, Country, Admin, Stage, RejectReason, Note, Email, Number
+                FROM Workers 
+                WHERE id = %s
+            """, (record_id,))
+            
+            record = cursor.fetchone()
+            conn.close()
+            
+            if record:
+                dialog = EditWorkerDialog(record, self)
+                if dialog.exec_() == QtWidgets.QDialog.Accepted:
+                    self.load_approved()  # Перезагружаем данные после редактирования
+        
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load record: {str(e)}")
+
+    def send_reminder_approved(self):
+        try:
+            # 1) Подключаемся к db3 и получаем записи
+            with open("db3.txt", "r") as file:
+                lines = file.readlines()
+                db3_config = {
+                    "host": lines[0].strip(),
+                    "user": lines[1].strip(),
+                    "password": lines[2].strip(),
+                    "database": "TranslatorDB",
+                    "port": int(lines[4].strip()),
+                }
+            conn_approved = mysql.connector.connect(**db3_config)
+            cursor_approved = conn_approved.cursor()
+            cursor_approved.execute("""
+                SELECT Name, Country 
+                FROM Workers 
+                WHERE Status='NEW' AND (Admin IS NULL OR Admin='')
+            """)
+            pending_records = cursor_approved.fetchall()
+            conn_approved.close()
+
+            if not pending_records:
+                QtWidgets.QMessageBox.information(self, "Info", "No NEW records without admin found.")
+                return
+
+            # 2) Для каждого ищем совпадение в Leads (phone, email, name)
+            conn_leads = mysql.connector.connect(**self.config)
+            cursor_leads = conn_leads.cursor()
+
+            # Читаем токен бота
+            with open("API.txt", "r") as file:
+                bot_token = file.read().strip()
+
+            message_text = """Hey there! 😊
+
+I see you successfully passed the video interview—congrats! 🎉 But it looks like you haven’t yet confirmed in our Telegram bot @Staff_manager_LERA_bot that you’ve completed the task.
+
+If you just forgot, no worries—go ahead and do it now! 😉 And if you have any questions, don’t hesitate to reach out to Svetlana @HR_LERA_Meneger —she’s happy to help! 💬✨"""
+
+            sent_count = 0
+            for i, record in enumerate(pending_records, start=1):
+                self.statusBar.showMessage(f"Sending reminder {i} of {len(pending_records)}...")
+                name_approved, country_approved = record
+                # Ищем запись в users по имени, телефону или емейлу
+                cursor_leads.execute("""
+                    SELECT telegram_id 
+                    FROM users 
+                    WHERE name=%s OR phone_number=%s OR email=%s
+                    LIMIT 1
+                """, (name_approved, name_approved, name_approved))
+                lead = cursor_leads.fetchone()
+
+                if lead and lead[0]:
+                    tid = lead[0]
+                    # Отправляем сообщение
+                    try:
+                        requests.get(
+                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                            params={"chat_id": tid, "text": message_text},
+                            timeout=10
+                        )
+                        sent_count += 1
+                    except Exception as e:
+                        print(f"Failed to send to {tid}: {e}")
+
+            conn_leads.close()
+            self.statusBar.clearMessage()
+            QtWidgets.QMessageBox.information(self, "Result", f"Reminders sent: {sent_count}")
+
+        except Exception as e:
+            print(f"Error in send_reminder_approved: {e}")
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+
+class EditWorkerDialog(QtWidgets.QDialog):
+    def __init__(self, record, parent=None):
+        super().__init__(parent)
+        self.record = record
+        self.setWindowTitle("Edit Worker")
+        self.setMinimumWidth(500)
+        
+        # Определяем возможные значения для выпадающих списков
+        self.admin_choices = []
+        try:
+            with open("admins.txt", "r") as file:
+                self.admin_choices = [line.strip() for line in file]
+        except Exception as e:
+            print(f"Error loading admins list: {e}")
+            
+        self.stage_choices = [
+            "Waiting for interview",
+            "Document check",
+            "Training",
+            "Ready to work",
+            "Working",
+            "Inactive",
+            "Rejected",
+            "Left"
+        ]
+        
+        self.reject_choices = [
+            "No response",
+            "Poor English",
+            "No experience",
+            "Low test results",
+            "Schedule mismatch",
+            "Salary expectations",
+            "Poor internet",
+            "Bad PC specs",
+            "No webcam",
+            "Declined offer",
+            "Other"
+        ]
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        form_layout = QtWidgets.QFormLayout()
+
+        # Статус
+        self.status_combo = QtWidgets.QComboBox()
+        self.status_combo.addItems(["NEW", "STUDY", "WORK", "LEFT"])
+        self.status_combo.setCurrentText(str(self.record[1] or ""))
+        form_layout.addRow("Status:", self.status_combo)
+
+        # Имя
+        self.name_edit = QtWidgets.QLineEdit(str(self.record[3] or ""))
+        form_layout.addRow("Name:", self.name_edit)
+
+        # Страна
+        self.country_edit = QtWidgets.QLineEdit(str(self.record[4] or ""))
+        form_layout.addRow("Country:", self.country_edit)
+
+        # Админ (выпадающий список)
+        self.admin_combo = QtWidgets.QComboBox()
+        self.admin_combo.addItem("")  # Пустой вариант
+        self.admin_combo.addItems(self.admin_choices)
+        current_admin = str(self.record[5] or "")
+        index = self.admin_combo.findText(current_admin)
+        self.admin_combo.setCurrentIndex(index if index >= 0 else 0)
+        form_layout.addRow("Admin:", self.admin_combo)
+
+        # Этап (выпадающий список)
+        self.stage_combo = QtWidgets.QComboBox()
+        self.stage_combo.addItem("")  # Пустой вариант
+        self.stage_combo.addItems(self.stage_choices)
+        current_stage = str(self.record[6] or "")
+        index = self.stage_combo.findText(current_stage)
+        self.stage_combo.setCurrentIndex(index if index >= 0 else 0)
+        form_layout.addRow("Stage:", self.stage_combo)
+
+        # Причина отказа (комбинированный виджет)
+        reject_layout = QtWidgets.QHBoxLayout()
+        self.reject_combo = QtWidgets.QComboBox()
+        self.reject_combo.addItem("")  # Пустой вариант
+        self.reject_combo.addItems(self.reject_choices)
+        self.reject_edit = QtWidgets.QLineEdit()
+        
+        # Устанавливаем текущее значение
+        current_reject = str(self.record[7] or "")
+        index = self.reject_combo.findText(current_reject)
+        if (index >= 0):
+            self.reject_combo.setCurrentIndex(index)
+        else:
+            self.reject_combo.setCurrentIndex(0)
+            if current_reject:  # Если значение не найдено в списке
+                self.reject_edit.setText(current_reject)
+        
+        self.reject_combo.currentTextChanged.connect(self.on_reject_changed)
+        
+        reject_layout.addWidget(self.reject_combo)
+        reject_layout.addWidget(self.reject_edit)
+        form_layout.addRow("Reject Reason:", reject_layout)
+
+        # Заметки
+        self.note_edit = QtWidgets.QTextEdit()
+        self.note_edit.setText(str(self.record[8] or ""))
+        self.note_edit.setMaximumHeight(100)
+        form_layout.addRow("Note:", self.note_edit)
+
+        # Email
+        self.email_edit = QtWidgets.QLineEdit(str(self.record[9] or ""))
+        form_layout.addRow("Email:", self.email_edit)
+
+        # Номер телефона
+        self.number_edit = QtWidgets.QLineEdit(str(self.record[10] or ""))
+        form_layout.addRow("Number:", self.number_edit)
+
+        layout.addLayout(form_layout)
+
+        # Кнопки
+        buttons = QtWidgets.QHBoxLayout()
+        save_button = QtWidgets.QPushButton("Save")
+        save_button.clicked.connect(self.save_changes)
+        save_button.setStyleSheet("background-color: #d4ffd4;")
+        
+        cancel_button = QtWidgets.QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        cancel_button.setStyleSheet("background-color: #ffd4d4;")
+        
+        buttons.addWidget(save_button)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
+
+    def on_reject_changed(self, text):
+        self.reject_edit.setEnabled(text == "Other")
+        if text != "Other":
+            self.reject_edit.clear()
+
+    def save_changes(self):
+        try:
+            with open("db3.txt", "r") as file:
+                lines = file.readlines()
+                db3_config = {
+                    "host": lines[0].strip(),
+                    "user": lines[1].strip(),
+                    "password": lines[2].strip(),
+                    "database": "TranslatorDB",
+                    "port": int(lines[4].strip()),
+                }
+            
+            # Определяем причину отказа
+            reject_reason = self.reject_edit.text() if self.reject_combo.currentText() == "Other" else self.reject_combo.currentText()
+            
+            conn = mysql.connector.connect(**db3_config)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE Workers 
+                SET Status = %s, Name = %s, Country = %s, Admin = %s, 
+                    Stage = %s, RejectReason = %s, Note = %s, Email = %s, Number = %s
+                WHERE id = %s
+            """, (
+                self.status_combo.currentText(),
+                self.name_edit.text(),
+                self.country_edit.text(),
+                self.admin_combo.currentText(),
+                self.stage_combo.currentText(),
+                reject_reason,
+                self.note_edit.toPlainText(),
+                self.email_edit.text(),
+                self.number_edit.text(),
+                self.record[0]
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            self.accept()
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save changes: {str(e)}")
 
 def main():
     print("Starting application...")
