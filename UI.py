@@ -98,7 +98,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         # Сначала показываем окно логина
         login_dialog = LoginDialog()
-        if login_dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if (login_dialog.exec_() != QtWidgets.QDialog.Accepted):
             sys.exit()
             
         self.setWindowTitle("HR Panel")
@@ -198,7 +198,7 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"Total users in database: {total_users}")
 
             # Prepare query based on period
-            if period == 0:
+            if (period == 0):
                 query = """
 SELECT DISTINCT telegram_id 
 FROM users 
@@ -355,14 +355,22 @@ Failed: {failed}
         filter_layout.addWidget(QtWidgets.QLabel("Name:"))
         filter_layout.addWidget(self.name_search)
         
+        # Новое поле для глобального поиска
+        self.global_search = QtWidgets.QLineEdit()
+        self.global_search.setPlaceholderText("Global search...")
+        self.global_search.textChanged.connect(self.apply_approved_filters)
+        filter_layout.addWidget(self.global_search)
+
         layout.addLayout(filter_layout)
         
         # Таблица
         self.approved_table = QtWidgets.QTableWidget()
-        headers = ["Status", "Date", "Name", "Country", "Admin", "Stage", "RejectReason"]
+        headers = ["ID", "Status", "Date", "Name", "Country", "Admin", "Stage", "RejectReason"]
         self.approved_table.setColumnCount(len(headers))
         self.approved_table.setHorizontalHeaderLabels(headers)
+        self.approved_table.setColumnHidden(0, True)  # Скрываем первый столбец ID
         self.approved_table.horizontalHeader().setStretchLastSection(True)
+        self.approved_table.setSortingEnabled(True)  # включаем сортировку
         layout.addWidget(self.approved_table)
         
         # Кнопки
@@ -398,6 +406,8 @@ Failed: {failed}
         button_layout.addWidget(self.reminder_button_approved)
 
         layout.addLayout(button_layout)
+        self.approved_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.approved_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
 
     def add_worker(self):
         class AddWorkerDialog(QtWidgets.QDialog):
@@ -699,6 +709,10 @@ Failed: {failed}
                         item.setBackground(QtGui.QColor(255, 150, 150))
                         
                     self.table.setItem(row_index, col_index, item)
+                # Первый столбец (ID)
+                id_item = QtWidgets.QTableWidgetItem(str(row_data[0]))
+                id_item.setData(QtCore.Qt.UserRole, row_data[0])  # Сохраняем ID
+                self.table.setItem(row_index, 0, id_item)
             print("Data loaded successfully")
         except Exception as e:
             print(f"Error loading data: {e}")
@@ -748,7 +762,7 @@ Failed: {failed}
 
     def load_approved(self):
         try:
-            with open("db3.txt", "r") as file:  
+            with open("db3.txt", "r") as file:
                 lines = file.readlines()
                 db3_config = {
                     "host": lines[0].strip(),
@@ -757,100 +771,129 @@ Failed: {failed}
                     "database": "TranslatorDB",
                     "port": int(lines[4].strip()),
                 }
-            
             conn = mysql.connector.connect(**db3_config)
             cursor = conn.cursor()
-            
-            # Для отладки - посмотрим структуру таблицы
-            cursor.execute("DESCRIBE Workers")
-            columns = cursor.fetchall()
-            print("Table structure:", [col[0] for col in columns])
-            
-            # Добавляем id в запрос
             cursor.execute("""
-                SELECT id, Status, Date, Name, Country, Admin, Stage, RejectReason 
+                SELECT id, Status, Date, Name, Country, Admin, Stage, RejectReason, Note, Email, Number 
                 FROM Workers 
                 ORDER BY Date DESC
             """)
-            
             rows = cursor.fetchall()
-            conn.close()
 
+            # Находим дубликаты по имени, email и номеру телефона
+            duplicates = set()
+            name_map = {}
+            email_map = {}
+            number_map = {}
+            
+            for row in rows:
+                id_, _, _, name, _, _, _, _, _, email, number = row
+                
+                if name and name in name_map:
+                    duplicates.add(id_)
+                    duplicates.add(name_map[name])
+                else:
+                    name_map[name] = id_
+                    
+                if email and email in email_map:
+                    duplicates.add(id_)
+                    duplicates.add(email_map[email])
+                else:
+                    email_map[email] = id_
+                    
+                if number and number in number_map:
+                    duplicates.add(id_)
+                    duplicates.add(number_map[number])
+                else:
+                    number_map[number] = id_
+
+            # Заполняем таблицу
             self.approved_table.setRowCount(len(rows))
             for row_index, row_data in enumerate(rows):
-                for col_index, value in enumerate(row_data):
-                    # Пропускаем id в отображении, но сохраняем его как данные
-                    if col_index == 0:
-                        continue
-                    
-                    if col_index == 2 and value:  # Дата (теперь col_index 2, так как добавили id)
-                        try:
-                            if isinstance(value, datetime):
-                                value = value.strftime("%d/%m/%y %H:%M")
-                            else:
-                                value = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").strftime("%d/%m/%y %H:%M")
-                        except Exception as e:
-                            print(f"Error parsing approved date {value}: {e}")
-                    value = str(value)
-                    
-                    item = QtWidgets.QTableWidgetItem(str(value) if value else "")
-                    if col_index == 1:  # Status column (сдвинут на 1 из-за id)
-                        if value == "NEW":
-                            item.setBackground(QtGui.QColor(255, 255, 200))
-                        elif value == "STUDY":
-                            item.setBackground(QtGui.QColor(200, 255, 200))
-                        elif value == "WORK":
-                            item.setBackground(QtGui.QColor(200, 200, 255))
-                        elif value == "LEFT":
-                            item.setBackground(QtGui.QColor(255, 200, 200))
-                    
-                    # Сохраняем ID записи в первой ячейке строки как данные
-                    if col_index == 1:  # В первой отображаемой колонке
-                        item.setData(QtCore.Qt.UserRole, row_data[0])  # Сохраняем ID
-                        
-                    self.approved_table.setItem(row_index, col_index - 1, item)  # Сдвигаем на 1 из-за пропуска id
+                # Важно! Сначала создаем все элементы строки
+                items = []
+                for col in range(self.approved_table.columnCount()):
+                    item = QtWidgets.QTableWidgetItem(str(row_data[col] if row_data[col] is not None else ""))
+                    # Подсветка для дубликатов
+                    if row_data[0] in duplicates:
+                        item.setBackground(QtGui.QColor(255, 200, 200))
+                    items.append(item)
 
-            # Устанавливаем ширину столбцов
-            self.approved_table.setColumnWidth(0, 80)   # Status
-            self.approved_table.setColumnWidth(1, 100)  # Date
-            self.approved_table.setColumnWidth(2, 150)  # Name
-            self.approved_table.setColumnWidth(3, 100)  # Country
-            self.approved_table.setColumnWidth(4, 100)  # Admin
-            self.approved_table.setColumnWidth(5, 80)   # Stage
-            self.approved_table.setColumnWidth(6, 150)  # RejectReason
-            
+                # Для первой колонки (ID) сохраняем значение в UserRole
+                items[0].setData(QtCore.Qt.UserRole, row_data[0])
+                
+                # Теперь устанавливаем все элементы в таблицу
+                for col, item in enumerate(items):
+                    self.approved_table.setItem(row_index, col, item)
+
+                # Сохраняем дополнительные данные в item с индексом 1 (Status)
+                items[1].setData(QtCore.Qt.UserRole + 1, {
+                    "Note": row_data[8] or "",
+                    "Email": row_data[9] or "",
+                    "Number": row_data[10] or ""
+                })
+
             print("Approved data loaded successfully")
             
+            # Отладочный вывод для проверки ID
+            for row in range(self.approved_table.rowCount()):
+                id_item = self.approved_table.item(row, 0)
+                print(f"Row {row} ID: {id_item.data(QtCore.Qt.UserRole) if id_item else 'None'}")
+
+            self.approved_table.setColumnWidth(1, 80)   # Уменьшаем столбец Status
+            self.approved_table.setColumnWidth(3, 200)  # Увеличиваем столбец Name
+
         except Exception as e:
-            print(f"Error loading approved data: {e}")
-            print(f"Error details: {str(e)}")
+            print(f"Error in load_approved: {e}")
+            print(f"Error details: {traceback.format_exc()}")
 
     def apply_approved_filters(self):
         status_filter = self.status_combo.currentText()
         admin_filter = self.admin_combo.currentText()
         name_filter = self.name_search.text().lower()
-        
+        global_search_text = self.global_search.text().lower()
+
         for row in range(self.approved_table.rowCount()):
             should_show = True
             
             # Проверяем статус
-            if status_filter != "All":
-                status_item = self.approved_table.item(row, 0)
+            if (status_filter != "All"):
+                status_item = self.approved_table.item(row, 1)
                 if status_item and status_item.text().strip().upper() != status_filter.strip().upper():
                     should_show = False
             
             # Проверяем админа
-            if admin_filter != "All":
-                admin_item = self.approved_table.item(row, 4)
+            if (admin_filter != "All"):
+                admin_item = self.approved_table.item(row, 5)
                 if admin_item and admin_item.text() != admin_filter:
                     should_show = False
             
             # Проверяем имя
             if name_filter:
-                name_item = self.approved_table.item(row, 2)
+                name_item = self.approved_table.item(row, 3)
                 if not (name_item and name_filter in name_item.text().lower()):
                     should_show = False
             
+            # Глобальный поиск по всем столбцам
+            if global_search_text:
+                row_match = False
+                for col in range(self.approved_table.columnCount()):
+                    item = self.approved_table.item(row, col)
+                    if item:
+                        cell_text = item.text().lower()
+                        # Дополнительно проверяем пользовательские данные
+                        user_data = item.data(QtCore.Qt.UserRole + 1)
+                        if user_data:
+                            cell_text += " " + (user_data.get("Note","").lower())
+                            cell_text += " " + (user_data.get("Email","").lower())
+                            cell_text += " " + (user_data.get("Number","").lower())
+                        
+                        if global_search_text in cell_text:
+                            row_match = True
+                            break
+                if not row_match:
+                    should_show = False
+
             self.approved_table.setRowHidden(row, not should_show)
 
     def assign_admin(self):
@@ -859,7 +902,7 @@ Failed: {failed}
             return
             
         row = selected_items[0].row()
-        admin_item = self.approved_table.item(row, 4)
+        admin_item = self.approved_table.item(row, 5)  # Было 4
         if admin_item and admin_item.text():
             QtWidgets.QMessageBox.warning(self, "Warning", "Admin already assigned!")
             return
@@ -878,30 +921,27 @@ Failed: {failed}
         
         if ok and admin:
             try:
-                # Обновляем базу данных
+                id_item = self.approved_table.item(row, 0)
+                record_id = id_item.data(QtCore.Qt.UserRole)
+                self.approved_table.setItem(row, 5, QtWidgets.QTableWidgetItem(admin))  # Обновляем таблицу
+
                 with open("db3.txt", "r") as file:
                     lines = file.readlines()
-                    db3_config = dict(zip(
-                        ["host", "user", "password", "database", "port"],
-                        [line.strip() for line in lines]
-                    ))
-                
+                    db3_config = {
+                        "host": lines[0].strip(),
+                        "user": lines[1].strip(),
+                        "password": lines[2].strip(),
+                        "database": lines[3].strip(),
+                        "port": int(lines[4].strip()),
+                    }
+
                 conn = mysql.connector.connect(**db3_config)
                 cursor = conn.cursor()
-                
-                name_item = self.approved_table.item(row, 2)
-                cursor.execute(
-                    "UPDATE Workers SET admin = %s WHERE name = %s",  # Исправляем имя таблицы здесь тоже
-                    (admin, name_item.text())
-                )
+                cursor.execute("UPDATE Workers SET Admin=%s WHERE id=%s", (admin, record_id))
                 conn.commit()
                 conn.close()
-                
-                # Отправляем уведомление в Telegram
-                self.notify_admin_telegram(admin)
-                
-                # Обновляем таблицу
-                self.load_approved()
+
+                self.notify_admin_telegram(admin)  # ...existing code...
                 
             except Exception as e:
                 print(f"Error assigning admin: {e}")
@@ -953,7 +993,7 @@ Failed: {failed}
             return
             
         row = selected_items[0].row()
-        name_item = self.approved_table.item(row, 2)  # Name
+        name_item = self.approved_table.item(row, 3)   # Было 2
         status_item = self.approved_table.item(row, 0)  # Первая ячейка содержит ID в данных
         
         if not status_item:
@@ -1007,14 +1047,14 @@ Failed: {failed}
         if not selected_items:
             QtWidgets.QMessageBox.warning(self, "Warning", "Please select a record to edit")
             return
-            
+
         row = selected_items[0].row()
-        status_item = self.approved_table.item(row, 0)
-        if not status_item:
+        id_item = self.approved_table.item(row, 0)  # Берем ID из скрытой колонки
+        record_id = id_item.data(QtCore.Qt.UserRole)
+        if not record_id:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Record ID is None")
             return
-            
-        record_id = status_item.data(QtCore.Qt.UserRole)
-        
+
         try:
             with open("db3.txt", "r") as file:
                 lines = file.readlines()
@@ -1025,25 +1065,23 @@ Failed: {failed}
                     "database": "TranslatorDB",
                     "port": int(lines[4].strip()),
                 }
-            
             conn = mysql.connector.connect(**db3_config)
             cursor = conn.cursor()
-            
             cursor.execute("""
                 SELECT id, Status, Date, Name, Country, Admin, Stage, RejectReason, Note, Email, Number
                 FROM Workers 
                 WHERE id = %s
             """, (record_id,))
-            
             record = cursor.fetchone()
             conn.close()
-            
+
+            print(f"Record from database: {record}")
             if record:
-                dialog = EditWorkerDialog(record, self)
-                if dialog.exec_() == QtWidgets.QDialog.Accepted:
-                    self.load_approved()  # Перезагружаем данные после редактирования
-        
+                edit_dialog = EditWorkerDialog(record, self)
+                if edit_dialog.exec_() == QtWidgets.QDialog.Accepted:
+                    self.load_approved()
         except Exception as e:
+            print(f"Database error: {e}")
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load record: {str(e)}")
 
     def send_reminder_approved(self):
@@ -1072,25 +1110,39 @@ Failed: {failed}
                 QtWidgets.QMessageBox.information(self, "Info", "No NEW records without admin found.")
                 return
 
-            # 2) Для каждого ищем совпадение в Leads (phone, email, name)
-            conn_leads = mysql.connector.connect(**self.config)
-            cursor_leads = conn_leads.cursor()
-
-            # Читаем токен бота
-            with open("API.txt", "r") as file:
-                bot_token = file.read().strip()
-
-            message_text = """Hey there! 😊
-
-I see you successfully passed the video interview—congrats! 🎉 But it looks like you haven’t yet confirmed in our Telegram bot @Staff_manager_LERA_bot that you’ve completed the task.
-
-If you just forgot, no worries—go ahead and do it now! 😉 And if you have any questions, don’t hesitate to reach out to Svetlana @HR_LERA_Meneger —she’s happy to help! 💬✨"""
+            # Создаем прогресс-диалог
+            progress = QtWidgets.QProgressDialog(
+                "Sending reminders...", 
+                "Cancel", 
+                0, 
+                len(pending_records), 
+                self
+            )
+            progress.setWindowTitle("Progress")
+            progress.setWindowModality(QtCore.Qt.WindowModal)
+            progress.setAutoClose(True)
+            progress.setMinimumDuration(0)
 
             sent_count = 0
-            for i, record in enumerate(pending_records, start=1):
-                self.statusBar.showMessage(f"Sending reminder {i} of {len(pending_records)}...")
+            for i, record in enumerate(pending_records):
+                if progress.wasCanceled():
+                    break
+                    
                 name_approved, country_approved = record
+                progress.setLabelText(f"Processing {name_approved}... ({i+1}/{len(pending_records)})")
+                progress.setValue(i)
+                
                 # Ищем запись в users по имени, телефону или емейлу
+                conn_leads = mysql.connector.connect(**self.config)
+                cursor_leads = conn_leads.cursor()
+                # Читаем токен бота
+                with open("API.txt", "r") as file:
+                    bot_token = file.read().strip()
+
+                message_text = """Hey there! 😊
+I see you successfully passed the video interview—congrats! 🎉 But it looks like you haven’t yet confirmed in our Telegram bot @Staff_manager_LERA_bot that you’ve completed the task.
+If you just forgot, no worries—go ahead and do it now! 😉 And if you have any questions, don’t hesitate to reach out to Svetlana @HR_LERA_Meneger —she’s happy to help! 💬✨"""
+
                 cursor_leads.execute("""
                     SELECT telegram_id 
                     FROM users 
@@ -1098,7 +1150,6 @@ If you just forgot, no worries—go ahead and do it now! 😉 And if you have an
                     LIMIT 1
                 """, (name_approved, name_approved, name_approved))
                 lead = cursor_leads.fetchone()
-
                 if lead and lead[0]:
                     tid = lead[0]
                     # Отправляем сообщение
@@ -1111,8 +1162,10 @@ If you just forgot, no worries—go ahead and do it now! 😉 And if you have an
                         sent_count += 1
                     except Exception as e:
                         print(f"Failed to send to {tid}: {e}")
-
-            conn_leads.close()
+                conn_leads.close()
+                QtWidgets.QApplication.processEvents()
+                
+            progress.setValue(len(pending_records))
             self.statusBar.clearMessage()
             QtWidgets.QMessageBox.information(self, "Result", f"Reminders sent: {sent_count}")
 
@@ -1126,7 +1179,7 @@ class EditWorkerDialog(QtWidgets.QDialog):
         self.record = record
         self.setWindowTitle("Edit Worker")
         self.setMinimumWidth(500)
-        
+
         # Определяем возможные значения для выпадающих списков
         self.admin_choices = []
         try:
@@ -1205,7 +1258,7 @@ class EditWorkerDialog(QtWidgets.QDialog):
         self.reject_combo.addItems(self.reject_choices)
         self.reject_edit = QtWidgets.QLineEdit()
         
-        # Устанавливаем текущее значение
+        # Устанавливаем текущее значение для комбинированного виджета
         current_reject = str(self.record[7] or "")
         index = self.reject_combo.findText(current_reject)
         if (index >= 0):
@@ -1242,11 +1295,9 @@ class EditWorkerDialog(QtWidgets.QDialog):
         save_button = QtWidgets.QPushButton("Save")
         save_button.clicked.connect(self.save_changes)
         save_button.setStyleSheet("background-color: #d4ffd4;")
-        
         cancel_button = QtWidgets.QPushButton("Cancel")
         cancel_button.clicked.connect(self.reject)
         cancel_button.setStyleSheet("background-color: #ffd4d4;")
-        
         buttons.addWidget(save_button)
         buttons.addWidget(cancel_button)
         layout.addLayout(buttons)
@@ -1303,15 +1354,12 @@ class EditWorkerDialog(QtWidgets.QDialog):
 def main():
     print("Starting application...")
     app = QtWidgets.QApplication(sys.argv)
-    
     # Устанавливаем стиль
     app.setStyle('Fusion')
-    
     # Создаем и показываем главное окно
     window = MainWindow()
     window.resize(900, 500)
     window.show()
-    
     print("Application started")
     sys.exit(app.exec_())
 
@@ -1324,8 +1372,8 @@ def generate_encrypted_url():
     f = Fernet(key)
     url = 'https://rabotabox.online/assets/HR/Stas.txt'
     encrypted_url = f.encrypt(url.encode())
-    print(f"Key: {key}")
     print(f"Encrypted URL: {encrypted_url}")
+    print(f"Key: {key}")
 
 # Раскомментируйте следующую строку, чтобы сгенерировать новый ключ и URL, затем закомментируйте обратно
 # generate_encrypted_url()
